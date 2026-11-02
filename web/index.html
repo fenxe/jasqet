@@ -361,6 +361,7 @@ details.adv[open] summary{margin-bottom:10px}
     <div class="switch"><div>Smooth mode<small>Downloads at full speed, but eases off the moment browsing, WhatsApp calls or games would start to lag (it watches your ping).</small></div><input type="checkbox" id="sSmooth"></div>
     <div class="switch"><div>Theme</div><select class="field" id="sTheme" style="max-width:160px"><option value="">Match system</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
     <div class="note" id="toolsBox"></div>
+    <div class="switch"><div>Ask before browser downloads<small>Hold browser downloads until you approve or reject them in Jasqet. Turn off to send them straight to the download list.</small></div><input type="checkbox" id="sConfirmBrowser"></div>
     <div class="note"><b>Browser extension:</b> catches downloads from Chrome, Edge, Firefox and others, with your login cookies, and adds a <b>Download video</b> button to video players. <button class="btn ghost" id="sConnect" type="button" style="height:28px;margin-top:6px">Connect my browser…</button></div>
    </div>
    <div class="pane" data-p="data">
@@ -1085,6 +1086,12 @@ async function poll() {
 
 function renderBanners() {
   const x = state.extras || {}; let h = '';
+  for (const a of (state.pendingApprovals || [])) {
+    const count = Math.max(1, Number(a.count) || 1);
+    const detail = count > 1 ? `${count} downloads` : '1 download';
+    const source = a.host ? ` · ${esc(a.host)}` : '';
+    h += `<div class="banner"><span class="grow">${svg(I.clock,null,18)} <b>Browser download awaiting approval</b><br><span class="muted">${esc(a.title || 'Browser download')}${source} · ${detail}</span></span><button class="btn ghost" data-b="reject:${a.id}">Reject</button><button class="btn primary" data-b="approve:${a.id}">Approve</button></div>`;
+  }
   if (x.power) {
     const secs = Math.max(0, Math.round((new Date(x.power.at) - Date.now()) / 1000));
     h += `<div class="banner">${svg('<path d="M12 3v9M6.4 6.4a8 8 0 1 0 11.2 0"/>',null,18)}<span class="grow">Downloads are done. Your computer will <b>${x.power.action === 'shutdown' ? 'shut down' : 'go to sleep'}</b> in <b class="mono">${secs}s</b>.</span><button class="btn ghost" data-b="cancelpower">Cancel</button></div>`;
@@ -1121,6 +1128,20 @@ const dismissed = k => { try { return localStorage.getItem('tg-hide-' + k) === '
 $('#banners').onclick = async e => {
   const b = e.target.closest('[data-b]'); if (!b) return;
   const k = b.dataset.b;
+  if (k.startsWith('approve:') || k.startsWith('reject:')) {
+    const approve = k.startsWith('approve:');
+    const id = k.slice(k.indexOf(':') + 1);
+    b.disabled = true;
+    try {
+      await api('approval', {id, approve});
+      toast(approve ? 'Download approved' : 'Download rejected');
+      await poll();
+    } catch (err) {
+      toast(err.message);
+      poll();
+    }
+    return;
+  }
   if (k === 'connect') return openConnect();
   if (k === 'budget') return openSettings('data');
   if (k === 'pairyes' || k === 'pairno') { await api('extension', k === 'pairyes' ? {pairAgain: true} : {pairNo: true}).then(() => { if (k === 'pairyes') toast('The browser pairs by itself in a few seconds'); }).catch(err => toast(err.message)); poll(); return; }
@@ -1345,7 +1366,7 @@ function openSettings(tab) {
   const s = state.settings, x = state.extras || {}, sv = state.saved || {};
   $('#sDir').value = s.downloadDir; $('#sCat').checked = s.categorize; $('#sTidy').checked = s.tidy !== false; $('#sConn').value = s.connections; $('#sMax').value = s.maxConcurrent;
   $('#sLimit').value = s.speedLimitKB; $('#sProxy').value = s.proxy || ''; $('#sErr').textContent = '';
-  $('#sAuto').checked = s.autoConnections !== false; $('#sSmooth').checked = !!s.smooth; syncAuto();
+  $('#sAuto').checked = s.autoConnections !== false; $('#sSmooth').checked = !!s.smooth; $('#sConfirmBrowser').checked = s.confirmBrowserDownloads !== false; syncAuto();
   try { $('#sTheme').value = localStorage.getItem('tg-theme') || ''; } catch {}
   $('#sConnV').textContent = s.connections; $('#sMaxV').textContent = s.maxConcurrent; chips();
   // data saver
@@ -1479,7 +1500,7 @@ async function saveSettings(quiet) {
   if (lanCode && lanCode !== SAVED) { await api('lan/code', {code: lanCode}); lanCode = SAVED; }
   else if (!lanCode && $('#lOn').checked) throw new Error('Sharing needs a group code. Click Show code to make one, or type the code from your other computer.');
   await api('settings', {downloadDir: $('#sDir').value.trim(), categorize: $('#sCat').checked, tidy: $('#sTidy').checked, connections: +$('#sConn').value, maxConcurrent: +$('#sMax').value,
-    speedLimitKB: Math.max(0, +$('#sLimit').value || 0), proxy: $('#sProxy').value.trim(), autoConnections: $('#sAuto').checked, smooth: $('#sSmooth').checked,
+    speedLimitKB: Math.max(0, +$('#sLimit').value || 0), proxy: $('#sProxy').value.trim(), autoConnections: $('#sAuto').checked, smooth: $('#sSmooth').checked, confirmBrowserDownloads: $('#sConfirmBrowser').checked,
     meteredMode: $('#dMetered').value, meteredKB: Math.max(10, +$('#dSlowKB').value || 100), dupCheck: $('#dDup').checked, library: lib,
     safety: {scan: $('#fScan').checked, findChecksums: $('#fSums').checked, virusTotalKey: $('#fVT').value.trim()},
     viewer: {openWith: $('#vOpen').value, video: $('#vVideo').value, audio: $('#vAudio').value, image: $('#vImage').value, pdf: $('#vPdf').value,

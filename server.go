@@ -3,8 +3,10 @@ package main
 import (
 	"embed"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,6 +20,28 @@ var webFS embed.FS
 
 const version = "1.6.2"
 
+type pendingApproval struct {
+	ID         string
+	Kind       string
+	Add        *AddRequest
+	Media      *AddMediaRequest
+	YT         *AddYTRequest
+	Title      string
+	Host       string
+	Count      int
+	Created    time.Time
+	Processing bool
+}
+
+type pendingApprovalView struct {
+	ID      string    `json:"id"`
+	Kind    string    `json:"kind"`
+	Title   string    `json:"title"`
+	Host    string    `json:"host"`
+	Count   int       `json:"count"`
+	Created time.Time `json:"created"`
+}
+
 type Server struct {
 	m    *Manager
 	port string
@@ -27,9 +51,11 @@ type Server struct {
 	pageMu   sync.Mutex
 	openPage string // a page the window should switch to (e.g. "connect")
 
-	hub *viewerHub // the built-in viewer
-	ext extGate    // browser extensions waiting for your Allow (extauth.go)
-	key *apiKey    // the window's key to the API (apikey.go)
+	hub        *viewerHub // the built-in viewer
+	ext        extGate    // browser extensions waiting for your Allow (extauth.go)
+	key        *apiKey    // the window's key to the API (apikey.go)
+	approvalMu sync.Mutex
+	approvals  map[string]*pendingApproval
 }
 
 func (s *Server) routes() http.Handler {
@@ -41,6 +67,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/ping", s.ping)
 	mux.HandleFunc("/api/session", s.apiSession)
 	mux.HandleFunc("/api/state", s.state)
+	mux.HandleFunc("/api/approval", s.approval)
 	mux.HandleFunc("/api/add", s.add)
 	mux.HandleFunc("/api/action", s.action)
 	mux.HandleFunc("/api/settings", s.saveSettings)
@@ -164,7 +191,16 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	s.pageMu.Unlock()
 	seen, _ := extensionSeen()
 	writeJSON(w, map[string]any{"downloads": list, "settings": settings, "saved": saved, "totalSpeed": total, "version": version,
-		"extras": s.m.Extras(), "openPage": page, "extConnected": seen, "extAsk": s.extQuestion(), "pairAsk": s.pairQuestion()})
+		"extras": s.m.Extras(), "openPage": page, "extConnected": seen, "extAsk": s.extQuestion(), "pairAsk": s.pairQuestion(),
+		"pendingApprovals": s.pendingApprovalViews()})
+}
+
+// confirmBrowserDownloads reports whether browser-originated downloads should wait for approval.
+func (s *Server) confirmBrowserDownloads() bool {
+	s.m.mu.Lock()
+	enabled := s.m.settings.ConfirmBrowserDownloads
+	s.m.mu.Unlock()
+	return enabled
 }
 
 func (s *Server) add(w http.ResponseWriter, r *http.Request) {
@@ -189,12 +225,183 @@ func (s *Server) add(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if !s.fromApp(r) && s.confirmBrowserDownloads() {
+		id, err := s.queueApproval("file", &req, nil, nil)
+		if err != nil {
+			writeErr(w, err.Error())
+			return
+		}
+		writeJSON(w, map[string]any{"pending": true, "id": id, "count": approvalURLCount(req)})
+		return
+	}
 	ids, err := s.m.Add(req)
 	if err != nil {
 		writeErr(w, friendlyError(err))
 		return
 	}
 	writeJSON(w, map[string]any{"ids": ids})
+}
+
+func approvalURLCount(req AddRequest) int {
+	n := 0
+	for _, line := range strings.Split(req.URL+"\n"+req.URLs, "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	if n == 0 {
+		return 1
+	}
+	return n
+}
+
+func (s *Server) queueApproval(kind string, add *AddRequest, media *AddMediaRequest, yt *AddYTRequest) (string, error) {
+	title, rawURL := "", ""
+	switch kind {
+	case "file":
+		title = add.FileName
+		rawURL = strings.TrimSpace(add.URL)
+		if rawURL == "" {
+			fields := strings.Fields(add.URLs)
+			if len(fields) > 0 {
+				rawURL = fields[0]
+			}
+		}
+	case "media":
+		title, rawURL = media.Title, media.URL
+	case "youtube":
+		title, rawURL = yt.Title, yt.URL
+	default:
+		return "", os.ErrInvalid
+	}
+
+	host := ""
+	if u, err := url.Parse(rawURL); err == nil {
+		host = u.Hostname()
+	}
+	if title == "" {
+		if host != "" {
+			title = "Download from " + host
+		} else if strings.HasPrefix(strings.ToLower(rawURL), "magnet:") {
+			title = "Magnet download"
+		} else {
+			title = "Browser download"
+		}
+	}
+
+	s.approvalMu.Lock()
+	defer s.approvalMu.Unlock()
+
+	if len(s.approvals) >= 100 {
+		return "", fmt.Errorf("approval queue is full; approve or reject some requests first")
+	}
+	if s.approvals == nil {
+		s.approvals = make(map[string]*pendingApproval)
+	}
+
+	id := randomHex(8)
+	for s.approvals[id] != nil {
+		id = randomHex(8)
+	}
+
+	count := 1
+	if kind == "file" {
+		count = approvalURLCount(*add)
+	} else if kind == "youtube" && yt.Playlist != nil && len(yt.Playlist.Entries) > 0 {
+		count = len(yt.Playlist.Entries)
+	}
+
+	s.approvals[id] = &pendingApproval{
+		ID: id, Kind: kind, Add: add, Media: media, YT: yt,
+		Title: title, Host: host, Count: count, Created: time.Now(),
+	}
+	return id, nil
+}
+
+func (s *Server) pendingApprovalViews() []pendingApprovalView {
+	s.approvalMu.Lock()
+	defer s.approvalMu.Unlock()
+
+	out := make([]pendingApprovalView, 0, len(s.approvals))
+	for _, a := range s.approvals {
+		out = append(out, pendingApprovalView{
+			ID: a.ID, Kind: a.Kind, Title: a.Title,
+			Host: a.Host, Count: a.Count, Created: a.Created,
+		})
+	}
+	return out
+}
+
+func (s *Server) approval(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.fromApp(r) {
+		writeErrCode(w, http.StatusForbidden, "only Jasqet's window can approve downloads")
+		return
+	}
+
+	var req struct {
+		ID      string `json:"id"`
+		Approve bool   `json:"approve"`
+	}
+	if json.NewDecoder(r.Body).Decode(&req) != nil || req.ID == "" {
+		writeErr(w, "bad approval request")
+		return
+	}
+
+	s.approvalMu.Lock()
+	pending := s.approvals[req.ID]
+	if pending == nil {
+		s.approvalMu.Unlock()
+		writeErrCode(w, http.StatusNotFound, "approval request no longer exists")
+		return
+	}
+	if pending.Processing {
+		s.approvalMu.Unlock()
+		writeErrCode(w, http.StatusConflict, "this request is already being processed")
+		return
+	}
+	if !req.Approve {
+		delete(s.approvals, req.ID)
+		s.approvalMu.Unlock()
+		writeJSON(w, map[string]any{"ok": true, "rejected": true})
+		return
+	}
+	pending.Processing = true
+	s.approvalMu.Unlock()
+
+	var ids []string
+	var err error
+	switch pending.Kind {
+	case "file":
+		ids, err = s.m.Add(*pending.Add)
+	case "media":
+		var id string
+		id, err = s.m.AddMedia(*pending.Media)
+		if err == nil {
+			ids = []string{id}
+		}
+	case "youtube":
+		ids, err = s.m.AddYT(*pending.YT)
+	default:
+		err = os.ErrInvalid
+	}
+
+	s.approvalMu.Lock()
+	if err != nil {
+		if current := s.approvals[req.ID]; current != nil {
+			current.Processing = false
+		}
+		s.approvalMu.Unlock()
+		writeErr(w, friendlyError(err))
+		return
+	}
+	delete(s.approvals, req.ID)
+	s.approvalMu.Unlock()
+
+	writeJSON(w, map[string]any{"ok": true, "ids": ids})
 }
 
 func (s *Server) action(w http.ResponseWriter, r *http.Request) {
@@ -578,6 +785,15 @@ func (s *Server) mediaAdd(w http.ResponseWriter, r *http.Request) {
 	if !s.fromApp(r) {
 		req.Dir = ""
 	}
+	if !s.fromApp(r) && s.confirmBrowserDownloads() {
+		id, err := s.queueApproval("media", nil, &req, nil)
+		if err != nil {
+			writeErr(w, err.Error())
+			return
+		}
+		writeJSON(w, map[string]any{"pending": true, "id": id, "count": 1})
+		return
+	}
 	id, err := s.m.AddMedia(req)
 	if err != nil {
 		writeErr(w, friendlyError(err))
@@ -613,6 +829,19 @@ func (s *Server) ytAdd(w http.ResponseWriter, r *http.Request) {
 	delete(req.Headers, "Cookie")
 	if !s.fromApp(r) {
 		req.Dir = ""
+	}
+	if !s.fromApp(r) && s.confirmBrowserDownloads() {
+		id, err := s.queueApproval("youtube", nil, nil, &req)
+		if err != nil {
+			writeErr(w, err.Error())
+			return
+		}
+		count := 1
+		if req.Playlist != nil && len(req.Playlist.Entries) > 0 {
+			count = len(req.Playlist.Entries)
+		}
+		writeJSON(w, map[string]any{"pending": true, "id": id, "count": count})
+		return
 	}
 	ids, err := s.m.AddYT(req)
 	if err != nil {

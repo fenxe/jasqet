@@ -1,4 +1,4 @@
-const APP = 'http://127.0.0.1:9614';
+const APP = 'http://127.0.0.1:9615';
 // The store editions set this to false: store rules don't allow YouTube
 // downloading in extensions (the Jasqet app itself still handles YouTube links).
 const YOUTUBE = true;
@@ -204,9 +204,9 @@ async function sendToApp(url, { referrer = '', fileName = '', page = '' } = {}) 
   try {
     const headers = /^magnet:/i.test(url) ? { 'User-Agent': navigator.userAgent } : await headersFor(url, referrer);
     // page: where the link came from, so Jasqet can get a fresh link if this one expires
-    await post('/api/add', { url, fileName, headers, page: page || referrer }, /^magnet:|\.torrent(\?|$)/i.test(url) ? 30000 : 2500);
-    return true;
-  } catch { return false; }
+    const result = await post('/api/add', { url, fileName, headers, page: page || referrer }, /^magnet:|\.torrent(\?|$)/i.test(url) ? 30000 : 2500);
+    return { ok: true, pending: !!result.pending };
+  } catch { return { ok: false, pending: false }; }
 }
 
 async function showApp(page = '') {
@@ -214,6 +214,29 @@ async function showApp(page = '') {
   try { await send('/api/show', { page }, 2500); return true; }
   catch { return false; }
 }
+
+// Native notification for downloads awaiting manual approval.
+const APPROVAL_NOTIFICATION_ID = 'jasqet-approval-pending';
+
+async function notifyApproval() {
+  try {
+    await chrome.notifications.create(APPROVAL_NOTIFICATION_ID, {
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('icons/48.png'),
+      title: 'Jasqet — approval needed',
+      message: 'A browser download is waiting for your approval. Click to review it.',
+      priority: 2
+    });
+  } catch (e) {
+    console.error('Jasqet notification failed:', e);
+  }
+}
+
+chrome.notifications.onClicked.addListener(async id => {
+  if (id !== APPROVAL_NOTIFICATION_ID) return;
+  try { await chrome.notifications.clear(id); } catch {}
+  await showApp();
+});
 
 function flash(text, color, tabId) {
   const o = tabId ? { tabId } : {};
@@ -240,7 +263,9 @@ async function toCatch(item) {
 async function handOver(item, c) {
   let page = item.referrer || '';
   if (!page) { try { const [t] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }); page = t?.url || ''; } catch {} }
-  return sendToApp(c.url, { referrer: item.referrer, fileName: c.name, page });
+  const result = await sendToApp(c.url, { referrer: item.referrer, fileName: c.name, page });
+  if (result.ok && result.pending) void notifyApproval();
+  return result.ok;
 }
 
 // The browser's own copy goes once Jasqet has the download.
@@ -497,26 +522,27 @@ async function download(opt, referer, title, later) {
   title = cleanTitle(title);
   try {
     if (opt.kind === 'yt') {
-      await post('/api/yt/add', {
+      const result = await post('/api/yt/add', {
         url: opt.url, variant: opt.variant, quality: opt.label, title: opt.title || title, estSize: opt.estSize || 0,
         later: !!later, playlist: opt.playlist || null, headers: pageHeaders(referer), subs: opt.subs || '',
         cookies: await ytCookies(opt.url, opt.session),
       });
-      return { ok: true };
+      return { ok: true, pending: !!result.pending };
     }
     if (opt.kind === 'file') {
       let ext = extOf(opt.url);
       if (!ext) ext = (opt.mime || '').includes('webm') ? 'webm' : (opt.mime || '').startsWith('audio') ? 'mp3' : 'mp4';
       const h = await headersFor(opt.url, referer);
-      await post('/api/add', { url: opt.url, fileName: title ? `${title}.${ext}` : '', headers: h, later: !!later });
+      const result = await post('/api/add', { url: opt.url, fileName: title ? `${title}.${ext}` : '', headers: h, later: !!later });
+      return { ok: true, pending: !!result.pending };
     } else {
-      await post('/api/media/add', {
+      const result = await post('/api/media/add', {
         url: opt.url, variant: opt.variant, quality: opt.label, title,
         audioOnly: !!opt.audioOnly, estSize: opt.estSize || 0, later: !!later,
         headers: pageHeaders(referer), cookies: await cookiesForHosts(opt.url, opt.hosts),
       });
+      return { ok: true, pending: !!result.pending };
     }
-    return { ok: true };
   } catch (e) {
     return { ok: false, error: e.message || 'Could not reach Jasqet' };
   }
@@ -551,7 +577,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.type === 'tg-download') {
     const tabId = msg.tabId ?? sender.tab?.id;
     download(msg.opt, msg.referer || sender.url, msg.title || sender.tab?.title || '', msg.later).then(r => {
-      if (r.ok) flash('✓', '#13955b', tabId);
+      if (r.ok) flash(r.pending ? '…' : '✓', r.pending ? '#d99a22' : '#13955b', tabId);
       sendResponse(r);
     });
     return true;
@@ -570,7 +596,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (c) cookies[h] = c;
         }
         const r = await post('/api/add', { urls: msg.urls.join('\n'), later: !!msg.later, cookies, page: msg.referer || '', headers: { 'User-Agent': navigator.userAgent, Referer: msg.referer || '' } }, 15000);
-        sendResponse({ ok: true, count: r.ids.length });
+        sendResponse({ ok: true, pending: !!r.pending, count: r.pending ? (r.count || msg.urls.length) : r.ids.length });
       } catch (e) { sendResponse({ ok: false, error: e.message }); }
     })();
     return true;
@@ -580,7 +606,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg?.type === 'tg-magnet') { // a magnet link was clicked on a page
-    sendToApp(msg.url, {}).then(ok => { flash(ok ? '✓' : 'OFF', ok ? '#13955b' : '#d23c3c', sender.tab?.id); sendResponse({ ok }); });
+    sendToApp(msg.url, {}).then(result => {
+      flash(!result.ok ? 'OFF' : result.pending ? '…' : '✓',
+            !result.ok ? '#d23c3c' : result.pending ? '#d99a22' : '#13955b', sender.tab?.id);
+      sendResponse(result);
+    });
     return true;
   }
   if (msg?.type === 'tg-show') {
@@ -635,12 +665,18 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId === 'tg-page') { openBatch(tab.id); return; }
   if (info.menuItemId === 'tg-zip') { const ok = await showApp('zip:' + info.linkUrl); flash(ok ? '✓' : 'OFF', ok ? '#13955b' : '#d23c3c', tab?.id); return; }
   const url = info.menuItemId === 'tg-link' ? info.linkUrl : info.srcUrl;
-  if (url && /^magnet:/i.test(url)) { const ok = await sendToApp(url, {}); flash(ok ? '✓' : 'OFF', ok ? '#13955b' : '#d23c3c', tab?.id); return; }
+  if (url && /^magnet:/i.test(url)) {
+    const result = await sendToApp(url, {});
+    flash(!result.ok ? 'OFF' : result.pending ? '…' : '✓',
+          !result.ok ? '#d23c3c' : result.pending ? '#d99a22' : '#13955b', tab?.id);
+    return;
+  }
   if (!url || !/^https?:/i.test(url)) {
     // blob: video: point people to the video button instead
     flash('▶', '#006fef', tab?.id);
     return;
   }
-  const ok = await sendToApp(url, { referrer: info.pageUrl || tab?.url || '', page: info.pageUrl || tab?.url || '' });
-  flash(ok ? '✓' : 'OFF', ok ? '#13955b' : '#d23c3c', tab?.id);
+  const result = await sendToApp(url, { referrer: info.pageUrl || tab?.url || '', page: info.pageUrl || tab?.url || '' });
+  flash(!result.ok ? 'OFF' : result.pending ? '…' : '✓',
+        !result.ok ? '#d23c3c' : result.pending ? '#d99a22' : '#13955b', tab?.id);
 });

@@ -16,7 +16,7 @@ import (
 )
 
 func main() {
-	port := flag.String("port", "9614", "port for the app's local page")
+	port := flag.String("port", "9615", "port for the app's local page")
 	noBrowser := flag.Bool("no-browser", false, "start in the tray without opening the window")
 	quitOther := flag.Bool("quit", false, "close a running Jasqet (used by the installer)")
 	connect := flag.Bool("connect-browser", false, "open the 'connect your browser' guide")

@@ -189,14 +189,15 @@ func (d *Download) downloadedLocked() int64 {
 }
 
 type Settings struct {
-	DownloadDir   string   `json:"downloadDir"`
-	MaxConcurrent int      `json:"maxConcurrent"`
-	Connections   int      `json:"connections"`
-	SpeedLimitKB  int64    `json:"speedLimitKB"`
-	Categorize    bool     `json:"categorize"`
-	Tidy          bool     `json:"tidy"` // tidy names of videos from release sites, a folder per series
-	Proxy         string   `json:"proxy"`
-	Schedule      Schedule `json:"schedule"`
+	DownloadDir             string   `json:"downloadDir"`
+	ConfirmBrowserDownloads bool     `json:"confirmBrowserDownloads"`
+	MaxConcurrent           int      `json:"maxConcurrent"`
+	Connections             int      `json:"connections"`
+	SpeedLimitKB            int64    `json:"speedLimitKB"`
+	Categorize              bool     `json:"categorize"`
+	Tidy                    bool     `json:"tidy"` // tidy names of videos from release sites, a folder per series
+	Proxy                   string   `json:"proxy"`
+	Schedule                Schedule `json:"schedule"`
 
 	Budget      Budget   `json:"budget"`
 	MeteredMode string   `json:"meteredMode"` // "pause" (default), "slow", "ignore"
@@ -309,15 +310,16 @@ func NewManager(stateFile string) *Manager {
 		ytsess:    &ytSessionState{},
 		stateFile: stateFile,
 		settings: Settings{
-			DownloadDir:   defaultDownloadDir(),
-			MaxConcurrent: 3,
-			Connections:   16,
-			Categorize:    true,
-			Tidy:          true,
-			Schedule:      defaultSchedule(),
-			MeteredMode:   "pause",
-			MeteredKB:     100,
-			DupCheck:      true,
+			DownloadDir:             defaultDownloadDir(),
+			ConfirmBrowserDownloads: true,
+			MaxConcurrent:           3,
+			Connections:             16,
+			Categorize:              true,
+			Tidy:                    true,
+			Schedule:                defaultSchedule(),
+			MeteredMode:             "pause",
+			MeteredKB:               100,
+			DupCheck:                true,
 
 			AutoConnections: true,
 			Safety:          SafetySettings{Scan: true, FindChecksums: true},
@@ -814,9 +816,9 @@ func friendlyError(err error) string {
 	var le *os.LinkError
 	switch {
 	case errors.As(err, &pe):
-		return fmt.Sprintf("Couldn't use “%s”: %s", filepath.Base(pe.Path), pe.Err)
+		return fmt.Sprintf("Couldn't use “%s”: %s", filepath.Base(strings.ReplaceAll(pe.Path, `\`, "/")), pe.Err)
 	case errors.As(err, &le):
-		return fmt.Sprintf("Couldn't use “%s”: %s", filepath.Base(le.Old), le.Err)
+		return fmt.Sprintf("Couldn't use “%s”: %s", filepath.Base(strings.ReplaceAll(le.Old, `\`, "/")), le.Err)
 	}
 	return msg
 }

@@ -116,6 +116,7 @@ func TestProgramsWithTrailingDotsAndNewTypes(t *testing.T) {
 func newTestServer(t *testing.T) (*Server, http.Handler) {
 	t.Helper()
 	m := newTestManager(t)
+	m.settings.ConfirmBrowserDownloads = false
 	s := &Server{m: m, port: "9614", quit: make(chan struct{}), hub: newViewerHub()}
 	return s, s.routes()
 }
