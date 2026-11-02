@@ -12,6 +12,62 @@ pictures and PDFs, even while they're still downloading.
 
 It's free and open source (MIT licence): no ads, no bundled software, no tracking.
 
+## What's Different in This Fork?
+### Mainly for Linux Browsers Web-app UI
+This fork of [Jasqet](https://github.com/junijas/jasqet) introduces additional features and improvements, with a particular focus on download control, Firefox integration, and Linux compatibility.
+
+### ✨ New Features
+
+#### 1. Browser Download Approval
+
+Take control of downloads initiated through the browser extension.
+
+- **Approval queue:** Browser-originated download requests are placed in a pending approval queue instead of starting immediately.
+- **Approve or reject:** Review pending requests and decide whether to start or reject each download directly from the Jasqet interface.
+- **Browser notifications:** Firefox displays a notification when a download request is waiting for approval.
+- **Configurable behavior:** Enable or disable download confirmation using the **Ask before browser downloads** setting.
+
+The confirmation feature is enabled by default.
+
+#### 2. Firefox Extension Improvements
+
+The Firefox extension has been updated to improve compatibility and integrate with the download approval workflow.
+
+- Uses Firefox-compatible background scripts.
+- Includes a Gecko extension ID for Firefox identification.
+- Supports browser notifications for pending download approvals.
+- Communicates with the Jasqet server on the updated default port.
+
+#### 3. Updated Default Server Port
+
+The default Jasqet server port has been changed:
+
+| | Port |
+|---|---:|
+| Original default | `9614` |
+| This fork | `9615` |
+
+The Firefox extension is configured to connect to `http://127.0.0.1:9615`.
+
+#### 4. Linux Compatibility Improvements
+
+- Improved Windows-style path handling in error messages on Linux.
+- Updated test configuration to account for the browser download approval setting.
+
+### 🛠️ Development and Testing
+
+The changes have been tested on Linux.
+
+- Full Go test suite passes with `go test ./`.
+- Application builds successfully with `go build`.
+- Firefox extension tested with Firefox Nightly.
+
+### Project Goals
+
+This fork aims to build upon Jasqet while retaining its original functionality and introducing practical improvements for users who want more control over browser-triggered downloads.
+
+**Note:** The Firefox extension manifest in this fork is configured for Firefox. Chromium-based browser compatibility may require a separate manifest configuration.
+
 **[Download Jasqet](https://github.com/junijas/jasqet/releases/latest)** for
 Windows 10 and 11. There are also builds for Windows on ARM, Linux and Mac.
 
@@ -537,5 +593,5 @@ code around your change (short comments in plain English), add no new
 dependencies without asking first, and add a test for every fix.
 
 ## Licence
-MIT, see `LICENSE.txt`. PDF.js in `web/pdfjs` keeps its own licence (Apache 2.0).
-What Jasqet stores and sends is in `docs/PRIVACY.md`.
+MIT, see [`LICENSE.txt`](LICENSE.txt). PDF.js in [`web/pdfjs`](web/pdfjs) keeps its own licence (Apache 2.0).
+What Jasqet stores and sends is in [`docs/PRIVACY.md`](docs/PRIVACY.md`).
