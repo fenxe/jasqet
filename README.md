@@ -68,6 +68,55 @@ This fork aims to build upon Jasqet while retaining its original functionality a
 
 **Note:** The Firefox extension manifest in this fork is configured for Firefox. Chromium-based browser compatibility may require a separate manifest configuration.
 
+------------------
+## Installing on Linux
+
+### Requirements
+- Linux (64-bit)
+- [Go](https://go.dev/dl/) installed
+- Git
+
+### Build and Install
+
+Clone this fork and build the application:
+
+```bash
+git clone https://github.com/fenxe/jasqet.git
+cd jasqet
+
+go build -o jasqet .
+```
+
+Install the compiled binary system-wide:
+
+```bash
+sudo install -Dm755 jasqet /usr/local/bin/jasqet
+```
+
+Launch Jasqet:
+
+```bash
+jasqet
+```
+
+Open the web interface in your browser:
+
+**http://127.0.0.1:9615**
+
+### Firefox Extension (Example)
+*Please manually test on other supported browsers too!*
+
+To use browser integration, load the Firefox extension included in the repository:
+
+1. Open `about:debugging#/runtime/this-firefox` in Firefox.
+2. Select **Load Temporary Add-on**.
+3. Navigate to the cloned repository's `extension` directory.
+4. Select `manifest.json`.
+
+**Note:** Temporary extensions are removed when Firefox restarts. For permanent installation and distribution, the extension needs to be packaged and signed through Mozilla.
+
+----------------------------------
+
 **[Download Jasqet](https://github.com/junijas/jasqet/releases/latest)** for
 Windows 10 and 11. There are also builds for Windows on ARM, Linux and Mac.
 
